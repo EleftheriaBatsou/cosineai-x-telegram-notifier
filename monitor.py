@@ -19,11 +19,15 @@ def _env(name: str, default: Optional[str] = None, required: bool = True) -> str
     return val
 
 
-def get_user_id(username: str, bearer: str) -> str:
+def get_user_id(username: str, bearer: str) -> Optional[str]:
     url = f"{TWITTER_API_BASE}/users/by/username/{username}"
     headers = {"Authorization": f"Bearer {bearer}"}
     params = {"user.fields": "id"}
     resp = requests.get(url, headers=headers, params=params, timeout=20)
+    if resp.status_code == 429:
+        # Rate limited, skip this run gracefully
+        print(f"Rate limited fetching user id for {username}: {resp.status_code} {resp.text}", file=sys.stderr)
+        return None
     if resp.status_code != 200:
         print(f"Error fetching user id for {username}: {resp.status_code} {resp.text}", file=sys.stderr)
         sys.exit(1)
@@ -43,6 +47,10 @@ def fetch_original_tweets(user_id: str, bearer: str, since_id: Optional[str]) ->
         params["since_id"] = since_id
 
     resp = requests.get(url, headers=headers, params=params, timeout=30)
+    if resp.status_code == 429:
+        # Rate limited; return no tweets so we don't fail the job
+        print(f"Rate limited fetching tweets: {resp.status_code} {resp.text}", file=sys.stderr)
+        return []
     if resp.status_code != 200:
         print(f"Error fetching tweets: {resp.status_code} {resp.text}", file=sys.stderr)
         sys.exit(1)
@@ -102,6 +110,10 @@ def main() -> None:
     first_run = last_seen_id is None
 
     user_id = get_user_id(twitter_username, twitter_bearer)
+    if not user_id:
+        # Rate limited or temporary issue; skip this run without failing
+        return
+
     tweets = fetch_original_tweets(user_id, twitter_bearer, last_seen_id)
 
     if first_run:
@@ -119,7 +131,7 @@ def main() -> None:
         return
 
     if not tweets:
-        # Nothing new
+        # Nothing new or rate limited
         return
 
     # Send each new tweet in chronological order
